@@ -9,12 +9,20 @@ Developed with the assistance of [Claude](https://claude.ai) by Anthropic.
 ---
 
 ## Contents
+
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Logs](#logs)
 - [Rolling back an update](#rolling-back-an-update)
+- [Useful commands](#useful-commands)
+- [Desktop notifications](#desktop-notifications)
+- [A note on reboot detection](#a-note-on-reboot-detection)
 - [Uninstall](#uninstall)
+- [Credits](#credits)
+
+---
 
 ## How it works
 
