@@ -8,6 +8,14 @@ Developed with the assistance of [Claude](https://claude.ai) by Anthropic.
 
 ---
 
+## Contents
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Rolling back an update](#rolling-back-an-update)
+- [Uninstall](#uninstall)
+
 ## How it works
 
 When you shut down or reboot (depending on your preference), a systemd service fires `atomic-update dup` before the system powers off. If updates are available:
