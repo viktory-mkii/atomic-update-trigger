@@ -165,9 +165,9 @@ cfgs = json.load(sys.stdin)['configs']
     echo "    typically 1–5 minutes depending on how many packages are pending."
     echo "    This is normal — the system is updating before it powers off."
     echo ""
-    echo "  • During shutdown or reboot, you will see atomic-update's output"
-    echo "    directly on screen — package names, progress, and a final result"
-    echo "    line. This is normal. The full log is also kept at:"
+    echo "  • The screen may go blank during the update on Wayland sessions."
+    echo "    This is expected — pressing Esc will show the update output."
+    echo "    The full log is also always available after boot:"
     echo "    sudo cat /var/log/atomic-update-trigger.log"
     echo ""
     echo -e "  ${YELLOW}${BOLD}One technical note:${RESET}"
@@ -237,17 +237,6 @@ install_config() {
 UPDATE_ON="poweroff"
 MERGE_EOF
             warn "Added missing key: UPDATE_ON=poweroff"
-            updated=1
-        fi
-
-        if ! grep -q "^VERBOSE_SHUTDOWN=" "${CONF_FILE}"; then
-            echo "" >> "${CONF_FILE}"
-            cat >> "${CONF_FILE}" << 'MERGE_EOF'
-# ── Output verbosity ──────────────────────────────────────────────────────────
-# yes: full output shown on TTY; no: only result line shown on TTY
-VERBOSE_SHUTDOWN="yes"
-MERGE_EOF
-            warn "Added missing key: VERBOSE_SHUTDOWN=yes"
             updated=1
         fi
 
@@ -343,12 +332,12 @@ MERGE_EOF
 # none     — never run (disables updates without removing the service)
 UPDATE_ON="${update_on}"
 
-# ── Output verbosity ──────────────────────────────────────────────────────────
-# During shutdown/reboot, atomic-update's full output is shown on the TTY.
-# Set to "no" to suppress TTY output (output is always written to the log).
-# Note: suppressing output may result in a blank screen during long updates.
-# This setting is intended for advanced users — the default "yes" is recommended.
-VERBOSE_SHUTDOWN="yes"
+# ── Advanced ──────────────────────────────────────────────────────────────────
+# VERBOSE_SHUTDOWN: set to "no" to suppress TTY output during shutdown/reboot.
+# Note: on Wayland sessions output is not visible during the update regardless
+# of this setting due to display handoff behaviour. Primarily relevant on X11.
+# Output is always written to the log. Default: yes
+#VERBOSE_SHUTDOWN="yes"
 
 # ── Desktop notifications ─────────────────────────────────────────────────────
 # NOTIFY_ON_SUCCESS: show a desktop notification after login when the last
@@ -363,7 +352,6 @@ CONF_EOF
     chmod 644 "${CONF_FILE}"
     success "Config file written: ${CONF_FILE}"
     info "UPDATE_ON=${update_on}"
-    info "VERBOSE_SHUTDOWN=yes (default — see ${CONF_FILE} to change)"
     info "NOTIFY_ON_SUCCESS=${notify_success}"
     info "NOTIFY_ON_PROBLEM=${notify_problem}"
 }

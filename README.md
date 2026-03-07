@@ -76,17 +76,6 @@ Controls when updates run.
 | `both` | Run on both shutdown and reboot |
 | `none` | Disable updates without removing the service |
 
-### `VERBOSE_SHUTDOWN`
-
-Controls whether `atomic-update`'s full output is shown on the TTY during shutdown/reboot.
-
-| Value | Behaviour |
-|-------|-----------|
-| `yes` | Full output shown on screen *(default, recommended)* |
-| `no` | Output suppressed on screen; always written to log |
-
-> **Note:** Setting this to `no` may result in a blank screen for the duration of a long update. This setting is intended for advanced users.
-
 ### `NOTIFY_ON_SUCCESS`
 
 Show a desktop notification after login when an update was applied successfully.
@@ -144,6 +133,10 @@ sudo journalctl -u atomic-update-trigger
 ```
 
 Logs are rotated monthly, keeping 12 months of history.
+
+### Screen output on Wayland
+
+On Wayland sessions the screen goes blank during shutdown once the compositor exits, and the update output is not visible — this is a display handoff limitation of Wayland and not specific to this tool. The update is still running correctly in the background. Pressing `Esc` during shutdown will switch to the text console and show the output in progress. The full log is always available after boot as above.
 
 ---
 
