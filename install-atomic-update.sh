@@ -6,12 +6,13 @@
 #   1. atomic-update          — transactional updater for openSUSE rw systems
 #   2. Config file            — runtime settings for verbosity and notifications
 #   3. Snapper no-dbus shim   — allows snapper to run without D-Bus at shutdown
-#   4. Trigger script       — runs atomic-update dup on every shutdown
-#   5. Systemd service        — hooks wrapper into the system shutdown/reboot sequence
+#   4. Trigger script         — runs atomic-update dup on every shutdown/reboot
+#   5. Systemd service        — hooks trigger into the system shutdown/reboot sequence
 #   6. Logrotate config       — keeps the log file from growing indefinitely
-#   7. Plymouth masking       — shows TTY output during shutdown
-#   8. Notification script    — fires desktop notifications after login
-#   9. User systemd service   — runs the notification script at login
+#   7. Notification script    — fires desktop notifications after login
+#   8. User systemd service   — runs the notification script at login
+#   9. Rollback wrapper       — safe rollback that prevents immediate re-update
+#  10. Skip-once command      — skips the next update trigger without config changes
 #
 # Usage:
 #   sudo bash install-atomic-update.sh              # install
@@ -28,10 +29,13 @@ ATOMIC_UPDATE_BIN="/usr/bin/atomic-update"
 CONF_FILE="/etc/atomic-update.conf"
 SNAPPER_SHIM="/usr/local/sbin/snapper-nodbus-shim"
 TRIGGER_SCRIPT="/usr/local/sbin/atomic-update-trigger"
+SKIP_ONCE_CMD="/usr/bin/atomic-update-skip-once"
+ROLLBACK_WRAPPER="/usr/bin/atomic-update-rollback"
 NOTIFY_SCRIPT="/usr/local/sbin/atomic-update-notify"
 SYSTEMD_SYSTEM_SERVICE="/etc/systemd/system/atomic-update-trigger.service"
 LOGROTATE_CONF="/etc/logrotate.d/atomic-update-trigger"
 LOG_FILE="/var/log/atomic-update-trigger.log"
+SKIP_FLAG="/etc/atomic-update-skip-once"
 
 # User-level paths (resolved after we know who SUDO_USER is)
 INVOKING_USER=""
@@ -156,10 +160,12 @@ cfgs = json.load(sys.stdin)['configs']
     echo "    snapshot unchanged, as if nothing happened."
     echo ""
     echo "  • To undo an update: reboot, select the previous snapshot from the"
-    echo "    bootloader menu, then run: sudo atomic-update rollback"
-    echo "    This makes that snapshot the permanent default. Running rollback"
-    echo "    from the already-updated system has no effect. Your personal"
-    echo "    files in /home are never affected by snapshots or rollbacks."
+    echo "    bootloader menu, then run: sudo atomic-update-rollback"
+    echo "    This makes that snapshot the permanent default and skips the next"
+    echo "    automatic update to prevent it being immediately re-applied."
+    echo "    Running rollback from the already-updated system has no effect."
+    echo "    Your personal files in /home are never affected by snapshots or"
+    echo "    rollbacks."
     echo ""
     echo "  • Shutdown and reboot will take longer when updates are available,"
     echo "    typically 1–5 minutes depending on how many packages are pending."
@@ -198,16 +204,10 @@ install_atomic_update() {
     fi
 
     info "Downloading atomic-update from GitHub..."
-    if command -v curl &>/dev/null; then
-        curl -fsSL \
-            "https://raw.githubusercontent.com/pavinjosdev/atomic-update/main/atomic-update" \
-            -o "${ATOMIC_UPDATE_BIN}"
-    elif command -v wget &>/dev/null; then
-        wget -qO "${ATOMIC_UPDATE_BIN}" \
-            "https://raw.githubusercontent.com/pavinjosdev/atomic-update/main/atomic-update"
-    else
-        die "Neither curl nor wget found. Cannot download atomic-update."
-    fi
+    command -v curl &>/dev/null || die "curl not found. Install it: sudo zypper install curl"
+    curl -fsSL \
+        "https://raw.githubusercontent.com/pavinjosdev/atomic-update/main/atomic-update" \
+        -o "${ATOMIC_UPDATE_BIN}"
 
     chmod 755 "${ATOMIC_UPDATE_BIN}"
     local ver
@@ -413,12 +413,23 @@ log() { echo "$*" | tee -a "${LOG_FILE}"; }
 log ""
 log "======================================================================"
 log "[${TIMESTAMP}] atomic-update-trigger fired"
-log "[config] VERBOSE_SHUTDOWN=${VERBOSE_SHUTDOWN} UPDATE_ON=${UPDATE_ON}"
+log "[config] UPDATE_ON=${UPDATE_ON}"
 log "======================================================================"
 
 # Bail immediately if updates are disabled entirely
 if [[ "${UPDATE_ON}" == "none" ]]; then
     log "[${TIMESTAMP}] Updates disabled (UPDATE_ON=none) — skipping"
+    log "----------------------------------------------------------------------"
+    exit 0
+fi
+
+# Validate UPDATE_ON — reject anything that isn't a known value
+if [[ "${UPDATE_ON}" != "poweroff" && \
+      "${UPDATE_ON}" != "reboot"   && \
+      "${UPDATE_ON}" != "both" ]]; then
+    log "[${TIMESTAMP}] Result: SKIPPED — UPDATE_ON has unrecognised value '${UPDATE_ON}'"
+    log "  Valid values: poweroff, reboot, both, none"
+    log "  Edit /etc/atomic-update.conf to fix this."
     log "----------------------------------------------------------------------"
     exit 0
 fi
@@ -441,6 +452,16 @@ if [[ ${IS_REBOOT} -eq 1 && "${UPDATE_ON}" == "poweroff" ]]; then
     exit 0
 elif [[ ${IS_REBOOT} -eq 0 && "${UPDATE_ON}" == "reboot" ]]; then
     log "[${TIMESTAMP}] Poweroff detected and UPDATE_ON=reboot — skipping"
+    log "----------------------------------------------------------------------"
+    exit 0
+fi
+
+# Skip-once flag — created by atomic-update-rollback to prevent the trigger
+# from immediately re-applying an update that was just rolled back.
+# Consumed on first run regardless of shutdown type.
+if [[ -f "/etc/atomic-update-skip-once" ]]; then
+    rm -f "/etc/atomic-update-skip-once"
+    log "[${TIMESTAMP}] Result: SKIPPED — rollback protection (skip-once flag was set)"
     log "----------------------------------------------------------------------"
     exit 0
 fi
@@ -561,27 +582,7 @@ LOGROTATE_EOF
     success "Log file: ${LOG_FILE}"
 }
 
-# ── 7. Plymouth shutdown masking ──────────────────────────────────────────────
-disable_plymouth_shutdown() {
-    header "Configuring Plymouth"
-
-    local masked=0
-    for svc in plymouth-halt.service plymouth-poweroff.service; do
-        if systemctl cat "${svc}" &>/dev/null 2>&1; then
-            systemctl mask "${svc}" 2>/dev/null && \
-                { success "Masked ${svc}"; masked=1; } || \
-                warn "Could not mask ${svc}"
-        fi
-    done
-
-    if [[ ${masked} -eq 1 ]]; then
-        info "Plymouth boot splash untouched; shutdown splash masked for TTY visibility."
-    else
-        info "No Plymouth shutdown services found — skipping."
-    fi
-}
-
-# ── 8. Notification script ────────────────────────────────────────────────
+# ── 7. Notification script ───────────────────────────────────────────────────
 install_notify_script() {
     header "Installing notification script"
 
@@ -638,6 +639,18 @@ elif echo "${LAST_RESULT}" | grep -q "NOTHING TO DO"; then
     # so we stay silent regardless of notification settings
     exit 0
 
+elif echo "${LAST_RESULT}" | grep -q "rollback protection"; then
+    # Skipped intentionally after a rollback — expected outcome, stay silent
+    exit 0
+
+elif echo "${LAST_RESULT}" | grep -q "unrecognised value"; then
+    # UPDATE_ON is misconfigured — notify regardless of NOTIFY_ON_PROBLEM
+    # since the user needs to know their config is broken
+    SUMMARY="Atomic update skipped — config error"
+    BODY="UPDATE_ON is set to an unrecognised value.\n\nFix it by editing:\nsudo nano /etc/atomic-update.conf\n\nValid values: poweroff, reboot, both, none\n\nLog: sudo cat ${LOG_FILE}"
+    URGENCY="normal"
+    ICON="dialog-warning"
+
 elif echo "${LAST_RESULT}" | grep -q "SKIPPED"; then
     [[ "${NOTIFY_ON_PROBLEM}" != "yes" ]] && exit 0
     SUMMARY="Atomic update skipped — package conflicts"
@@ -673,7 +686,7 @@ NOTIFY_EOF
     success "Notification script installed: ${NOTIFY_SCRIPT}"
 }
 
-# ── 9. Systemd user service for notifications ─────────────────────────────────
+# ── 8. Systemd user service for notifications ─────────────────────────────────
 install_user_service() {
     header "Installing notification user service"
 
@@ -759,6 +772,93 @@ verify_install() {
     fi
 }
 
+# ── 9. Rollback wrapper ──────────────────────────────────────────────────────
+install_rollback_wrapper() {
+    header "Installing rollback wrapper"
+
+    cat > "${ROLLBACK_WRAPPER}" << 'ROLLBACK_EOF'
+#!/usr/bin/env bash
+# /usr/bin/atomic-update-rollback
+# Safe wrapper around 'atomic-update rollback' that sets a skip-once flag
+# to prevent the trigger from immediately re-applying updates after a rollback.
+#
+# Usage:
+#   sudo atomic-update-rollback          — roll back to previous snapshot
+#   sudo atomic-update-rollback 87       — roll back to a specific snapshot number
+#
+# After running this command:
+#   1. Reboot into the previous snapshot via the bootloader menu
+#   2. Run this command from that snapshot
+#   3. Reboot — the rolled-back snapshot is now the permanent default
+#      and the next automatic update will be skipped once
+
+SKIP_FLAG="/etc/atomic-update-skip-once"
+ATOMIC_UPDATE="/usr/bin/atomic-update"
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: this script must be run as root (use sudo)." >&2
+    exit 1
+fi
+
+# Pass optional snapshot number through to atomic-update rollback
+if [[ -n "${1:-}" ]]; then
+    "${ATOMIC_UPDATE}" rollback "${1}"
+else
+    "${ATOMIC_UPDATE}" rollback
+fi
+
+EXIT_CODE=$?
+
+if [[ ${EXIT_CODE} -eq 0 ]]; then
+    touch "${SKIP_FLAG}"
+    chmod 644 "${SKIP_FLAG}"
+    echo ""
+    echo "Rollback complete. This snapshot is now set as the permanent default."
+    echo "The next automatic update trigger will be skipped once."
+    echo ""
+    echo "Reboot to activate the changes."
+else
+    echo ""
+    echo "Rollback failed (exit code ${EXIT_CODE}) — skip-once flag not set." >&2
+    exit ${EXIT_CODE}
+fi
+ROLLBACK_EOF
+
+    chmod 755 "${ROLLBACK_WRAPPER}"
+    success "Rollback wrapper installed: ${ROLLBACK_WRAPPER}"
+}
+
+# ── 10. Skip-once command ─────────────────────────────────────────────────────
+install_skip_once() {
+    header "Installing skip-once command"
+
+    cat > "${SKIP_ONCE_CMD}" << 'SKIP_EOF'
+#!/usr/bin/env bash
+# /usr/bin/atomic-update-skip-once
+# Sets the skip-once flag to prevent the next automatic update trigger run.
+# Useful when you want to skip one update cycle without changing your config.
+# The flag is consumed automatically on the next trigger run.
+
+SKIP_FLAG="/etc/atomic-update-skip-once"
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: this script must be run as root (use sudo)." >&2
+    exit 1
+fi
+
+if [[ -f "${SKIP_FLAG}" ]]; then
+    echo "Skip-once flag is already set — the next update trigger will be skipped."
+else
+    touch "${SKIP_FLAG}"
+    chmod 644 "${SKIP_FLAG}"
+    echo "Skip-once flag set. The next automatic update trigger will be skipped."
+fi
+SKIP_EOF
+
+    chmod 755 "${SKIP_ONCE_CMD}"
+    success "Skip-once command installed: ${SKIP_ONCE_CMD}"
+}
+
 # ── Uninstall ─────────────────────────────────────────────────────────────────
 uninstall() {
     header "Uninstalling atomic-update trigger"
@@ -787,19 +887,21 @@ uninstall() {
     fi
 
     for f in "${SYSTEMD_SYSTEM_SERVICE}" "${TRIGGER_SCRIPT}" "${SNAPPER_SHIM}" \
-              "${NOTIFY_SCRIPT}" "${LOGROTATE_CONF}"; do
+              "${NOTIFY_SCRIPT}" "${LOGROTATE_CONF}" "${ROLLBACK_WRAPPER}" \
+              "${SKIP_ONCE_CMD}"; do
         if [[ -f "${f}" ]]; then
             rm -f "${f}"
             success "Removed: ${f}"
         fi
     done
 
-    systemctl daemon-reload
+    # Remove skip flag if present
+    if [[ -f "${SKIP_FLAG}" ]]; then
+        rm -f "${SKIP_FLAG}"
+        success "Removed skip flag: ${SKIP_FLAG}"
+    fi
 
-    for svc in plymouth-halt.service plymouth-poweroff.service; do
-        systemctl unmask "${svc}" 2>/dev/null && \
-            success "Unmasked ${svc}" || true
-    done
+    systemctl daemon-reload
 
     # Config file — ask rather than silently removing or keeping
     if [[ -f "${CONF_FILE}" ]]; then
@@ -858,7 +960,9 @@ print_summary() {
     echo "  • Service status  : systemctl status atomic-update-trigger"
     echo "  • Disable updates : sudo systemctl disable atomic-update-trigger"
     echo "  • Re-enable       : sudo systemctl enable atomic-update-trigger"
-    echo "  • Manual rollback : sudo atomic-update rollback"
+    echo "  • Manual rollback : sudo atomic-update-rollback"
+    echo "  • Manual rollback : sudo atomic-update-rollback <snapshot>"
+    echo "  • Skip next update: sudo atomic-update-skip-once"
     echo "  • Full uninstall  : sudo bash $0 --uninstall"
     echo ""
 }
@@ -895,9 +999,10 @@ main() {
     install_trigger
     install_trigger_service
     install_logrotate
-    disable_plymouth_shutdown
     install_notify_script
     install_user_service
+    install_rollback_wrapper
+    install_skip_once
 
     # ── Phase 3: verify and summary ───────────────────────────────────────────
     echo ""

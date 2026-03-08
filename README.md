@@ -86,21 +86,11 @@ Controls when updates run.
 
 ### `NOTIFY_ON_SUCCESS`
 
-Show a desktop notification after login when an update was applied successfully.
-
-| Value | Behaviour |
-|-------|-----------|
-| `no` | No notification on success *(default)* |
-| `yes` | Notify on successful update |
+Show a desktop notification after login when an update was applied successfully. Default: `no`.
 
 ### `NOTIFY_ON_PROBLEM`
 
-Show a desktop notification after login when an update was skipped (package conflicts) or failed unexpectedly.
-
-| Value | Behaviour |
-|-------|-----------|
-| `yes` | Notify on skip or failure *(default)* |
-| `no` | No notification |
+Show a desktop notification after login when an update was skipped (package conflicts) or failed unexpectedly. Default: `yes`.
 
 ---
 
@@ -117,7 +107,7 @@ Each run produces an entry like:
 ```
 ======================================================================
 [2026-03-06 21:00:00] atomic-update-trigger fired
-[config] VERBOSE_SHUTDOWN=yes UPDATE_ON=poweroff
+[config] UPDATE_ON=poweroff
 ======================================================================
 ... atomic-update output ...
 
@@ -150,17 +140,25 @@ On Wayland sessions the screen goes blank during shutdown once the compositor ex
 
 ## Rolling back an update
 
+> **Always use `atomic-update-rollback` instead of `atomic-update rollback` directly.** The wrapper sets a skip-once flag that prevents the trigger from immediately re-applying the update you just rolled back from.
+
 If you want to undo an update after it has been applied:
 
 1. Reboot the system
 2. In the bootloader menu, select the **previous snapshot** (the one before the update)
 3. Once booted into the old snapshot, run:
    ```bash
-   sudo atomic-update rollback
+   sudo atomic-update-rollback
    ```
-4. Reboot again — the old snapshot is now the permanent default
+   Or to roll back to a specific snapshot number:
+   ```bash
+   sudo atomic-update-rollback 87
+   ```
+4. Reboot — the old snapshot is now the permanent default, and the next automatic update trigger will be skipped once to protect the rollback
 
-> **Important:** Running `rollback` from the already-updated system has no effect. You must first boot into the previous snapshot via the bootloader, then run the command from there.
+> **Why the skip-once flag matters:** Without it, shutting down or rebooting after a rollback would immediately re-apply the same update, undoing the rollback. The flag is automatically removed after one trigger run.
+
+> **Important:** Running rollback from the already-updated system has no effect. You must first boot into the previous snapshot via the bootloader, then run the command from there.
 
 Your personal files in `/home` are on a separate btrfs subvolume and are **never** affected by snapshots or rollbacks.
 
@@ -184,8 +182,14 @@ cat /var/log/atomic-update-trigger.log
 # View journal
 sudo journalctl -u atomic-update-trigger
 
-# Manual rollback (must be run from previous snapshot — see above)
-sudo atomic-update rollback
+# Manual rollback (boot into previous snapshot first — see above)
+sudo atomic-update-rollback
+
+# Manual rollback to specific snapshot number
+sudo atomic-update-rollback 87
+
+# Skip the next automatic update trigger without changing config
+sudo atomic-update-skip-once
 ```
 
 ---
